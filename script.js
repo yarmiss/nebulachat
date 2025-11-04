@@ -11,17 +11,128 @@ let currentChannel = 'general';
 let messages = {};
 let users = new Map();
 let currentUser = null;
+let ws = null;
+let wsReconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Инициализация
 document.addEventListener('DOMContentLoaded', () => {
     initializeUser();
+    initializeWebSocket();
     initializeEventListeners();
-    initializeWebRTC();
     loadMessages();
     
     // Периодически обновляем список пользователей
     setInterval(updateUsers, 2000);
 });
+
+// Инициализация WebSocket
+function initializeWebSocket() {
+    // Используем WebSocket сервер
+    // В продакшене замените на URL вашего Cloudflare Worker
+    const wsUrl = getWebSocketUrl();
+    
+    try {
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+            console.log('WebSocket подключен');
+            wsReconnectAttempts = 0;
+            
+            // Отправляем информацию о пользователе
+            if (currentUser) {
+                ws.send(JSON.stringify({
+                    type: 'user_update',
+                    data: {
+                        ...currentUser,
+                        lastSeen: Date.now()
+                    }
+                }));
+            }
+        };
+        
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'new_message') {
+                    handleRemoteMessage(data.data);
+                } else if (data.type === 'user_update') {
+                    handleUserUpdate(data.data);
+                } else if (data.type === 'history') {
+                    handleMessageHistory(data.messages);
+                }
+            } catch (e) {
+                console.error('Ошибка обработки WebSocket сообщения:', e);
+            }
+        };
+        
+        ws.onerror = (error) => {
+            console.error('WebSocket ошибка:', error);
+        };
+        
+        ws.onclose = () => {
+            console.log('WebSocket отключен');
+            // Попытка переподключения
+            if (wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                wsReconnectAttempts++;
+                setTimeout(() => {
+                    console.log(`Попытка переподключения ${wsReconnectAttempts}...`);
+                    initializeWebSocket();
+                }, 2000 * wsReconnectAttempts);
+            }
+        };
+    } catch (e) {
+        console.error('Ошибка создания WebSocket:', e);
+        // Fallback на localStorage если WebSocket недоступен
+        initializeWebRTC();
+    }
+}
+
+function getWebSocketUrl() {
+    // Определяем URL WebSocket сервера
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    
+    // Для локальной разработки используем локальный сервер
+    if (host.includes('localhost') || host.includes('127.0.0.1')) {
+        return `ws://localhost:8080?room=${currentChannel}`;
+    } else {
+        // В продакшене используем Cloudflare Worker
+        const workerUrl = 'wss://discord-websocket.ptitsyn-oleshka.workers.dev';
+        return `${workerUrl}?room=${currentChannel}`;
+    }
+}
+
+function handleMessageHistory(historyMessages) {
+    if (!historyMessages || historyMessages.length === 0) return;
+    
+    historyMessages.forEach(msg => {
+        if (!messages[msg.channel]) {
+            messages[msg.channel] = [];
+        }
+        if (!messages[msg.channel].find(m => m.id === msg.id)) {
+            messages[msg.channel].push(msg);
+        }
+    });
+    
+    // Сохраняем в localStorage для офлайн режима
+    Object.keys(messages).forEach(channel => {
+        localStorage.setItem(`messages_${channel}`, JSON.stringify(messages[channel]));
+    });
+    
+    if (messages[currentChannel]) {
+        renderMessages();
+    }
+}
+
+function handleUserUpdate(userData) {
+    if (userData.id === currentUser.id) return;
+    
+    users.set(userData.id, userData);
+    addUserToList(userData);
+    document.getElementById('membersCount').textContent = users.size;
+}
 
 // Инициализация пользователя
 function initializeUser() {
@@ -70,6 +181,12 @@ function initializeEventListeners() {
             item.classList.add('active');
             currentChannel = item.dataset.channel;
             document.querySelector('.channel-title').textContent = item.querySelector('span:last-child').textContent;
+            
+            // Переподключаемся к WebSocket с новой комнатой
+            if (ws) {
+                ws.close();
+            }
+            initializeWebSocket();
             loadMessages();
         });
     });
@@ -117,10 +234,8 @@ function initializeEventListeners() {
     });
 }
 
-// Инициализация WebRTC
+// Инициализация WebRTC (fallback если WebSocket недоступен)
 function initializeWebRTC() {
-    // Используем простую реализацию через localStorage для синхронизации
-    // В реальном приложении здесь был бы WebSocket сервер
     setInterval(checkForNewMessages, 1000);
 }
 
@@ -221,14 +336,20 @@ function sendMessage() {
     messages[currentChannel].push(message);
     localStorage.setItem(`messages_${currentChannel}`, JSON.stringify(messages[currentChannel]));
     
-    // Синхронизация с другими пользователями через localStorage
-    const syncKey = `sync_${currentChannel}_${Date.now()}`;
-    localStorage.setItem(syncKey, JSON.stringify(message));
-    
-    // Удаляем старые ключи синхронизации
-    setTimeout(() => {
-        localStorage.removeItem(syncKey);
-    }, 5000);
+    // Отправляем через WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: 'message',
+            ...message
+        }));
+    } else {
+        // Fallback на localStorage если WebSocket недоступен
+        const syncKey = `sync_${currentChannel}_${Date.now()}`;
+        localStorage.setItem(syncKey, JSON.stringify(message));
+        setTimeout(() => {
+            localStorage.removeItem(syncKey);
+        }, 5000);
+    }
     
     input.value = '';
     renderMessages();
@@ -241,9 +362,10 @@ function sendMessage() {
     });
 }
 
-// Проверка новых сообщений
+// Проверка новых сообщений (fallback)
 function checkForNewMessages() {
-    // Проверяем localStorage на новые сообщения
+    if (ws && ws.readyState === WebSocket.OPEN) return; // Используем WebSocket
+    
     const keys = Object.keys(localStorage);
     keys.forEach(key => {
         if (key.startsWith('sync_')) {
@@ -266,36 +388,61 @@ function checkForNewMessages() {
     });
 }
 
+function handleRemoteMessage(message) {
+    if (!messages[message.channel]) {
+        messages[message.channel] = [];
+    }
+    
+    if (!messages[message.channel].find(m => m.id === message.id)) {
+        messages[message.channel].push(message);
+        localStorage.setItem(`messages_${message.channel}`, JSON.stringify(messages[message.channel]));
+        
+        if (message.channel === currentChannel) {
+            renderMessages();
+        }
+    }
+}
+
 // Управление пользователями
 function updateUsers() {
-    // Синхронизация пользователей через localStorage
-    const userKey = `user_${currentUser.id}`;
-    localStorage.setItem(userKey, JSON.stringify({
-        ...currentUser,
-        lastSeen: Date.now()
-    }));
-    
-    // Находим других активных пользователей
-    const keys = Object.keys(localStorage);
-    keys.forEach(key => {
-        if (key.startsWith('user_') && key !== userKey) {
-            try {
-                const userData = JSON.parse(localStorage.getItem(key));
-                const lastSeen = Date.now() - (userData.lastSeen || 0);
-                if (lastSeen < 10000) { // Активен в последние 10 секунд
-                    if (!users.has(userData.id)) {
-                        users.set(userData.id, userData);
-                        addUserToList(userData);
-                    }
-                } else {
-                    users.delete(userData.id);
-                    removeUserFromList(userData.id);
-                }
-            } catch (e) {
-                // Игнорируем ошибки
+    // Отправляем обновление через WebSocket
+    if (ws && ws.readyState === WebSocket.OPEN && currentUser) {
+        ws.send(JSON.stringify({
+            type: 'user_update',
+            data: {
+                ...currentUser,
+                lastSeen: Date.now()
             }
-        }
-    });
+        }));
+    } else {
+        // Fallback на localStorage
+        const userKey = `user_${currentUser.id}`;
+        localStorage.setItem(userKey, JSON.stringify({
+            ...currentUser,
+            lastSeen: Date.now()
+        }));
+        
+        const keys = Object.keys(localStorage);
+        keys.forEach(key => {
+            if (key.startsWith('user_') && key !== userKey) {
+                try {
+                    const userData = JSON.parse(localStorage.getItem(key));
+                    const lastSeen = Date.now() - (userData.lastSeen || 0);
+                    if (lastSeen < 10000) {
+                        if (!users.has(userData.id)) {
+                            users.set(userData.id, userData);
+                            addUserToList(userData);
+                        }
+                    } else {
+                        users.delete(userData.id);
+                        removeUserFromList(userData.id);
+                    }
+                } catch (e) {
+                    // Игнорируем ошибки
+                }
+            }
+        });
+    }
     
     document.getElementById('membersCount').textContent = users.size;
 }
@@ -346,7 +493,6 @@ async function startCall() {
         addLocalVideo(localStream, currentUser.name);
         isCallActive = true;
         
-        // Создаем подключения к другим пользователям
         users.forEach((user, userId) => {
             if (userId !== currentUser.id) {
                 createPeerConnection(userId);
@@ -399,14 +545,12 @@ function createPeerConnection(userId) {
     const pc = new RTCPeerConnection(configuration);
     peerConnections.set(userId, pc);
     
-    // Добавляем локальный поток
     if (localStream) {
         localStream.getTracks().forEach(track => {
             pc.addTrack(track, localStream);
         });
     }
     
-    // Обработка входящего потока
     pc.ontrack = (event) => {
         const stream = event.streams[0];
         remoteStreams.set(userId, stream);
@@ -414,7 +558,6 @@ function createPeerConnection(userId) {
         addRemoteVideo(stream, user ? user.name : 'Неизвестный');
     };
     
-    // Создаем data channel для сообщений
     const dataChannel = pc.createDataChannel('messages');
     dataChannels.set(userId, dataChannel);
     
@@ -433,39 +576,20 @@ function createPeerConnection(userId) {
         }
     };
     
-    // Обработка ICE кандидатов
     pc.onicecandidate = (event) => {
         if (event.candidate) {
-            // В реальном приложении здесь была бы отправка через signaling сервер
             console.log('ICE candidate:', event.candidate);
         }
     };
     
-    // Создаем offer
     pc.createOffer()
         .then(offer => pc.setLocalDescription(offer))
         .then(() => {
             console.log('Offer создан для', userId);
-            // В реальном приложении здесь была бы отправка offer через signaling сервер
         })
         .catch(error => {
             console.error('Ошибка создания offer:', error);
         });
-}
-
-function handleRemoteMessage(message) {
-    if (!messages[message.channel]) {
-        messages[message.channel] = [];
-    }
-    
-    if (!messages[message.channel].find(m => m.id === message.id)) {
-        messages[message.channel].push(message);
-        localStorage.setItem(`messages_${message.channel}`, JSON.stringify(messages[message.channel]));
-        
-        if (message.channel === currentChannel) {
-            renderMessages();
-        }
-    }
 }
 
 function addLocalVideo(stream, name) {
@@ -478,7 +602,7 @@ function addLocalVideo(stream, name) {
     const video = document.createElement('video');
     video.srcObject = stream;
     video.autoplay = true;
-    video.muted = true; // Локальное видео всегда без звука
+    video.muted = true;
     
     const label = document.createElement('div');
     label.className = 'video-label';
@@ -492,7 +616,6 @@ function addLocalVideo(stream, name) {
 function addRemoteVideo(stream, name) {
     const videosContainer = document.getElementById('callVideos');
     
-    // Удаляем старое видео если есть
     const existing = document.getElementById(`video_remote_${name}`);
     if (existing) {
         existing.remove();
@@ -524,31 +647,26 @@ function hideCallModal() {
 }
 
 function endCall() {
-    // Останавливаем локальный поток
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
     
-    // Закрываем все peer connections
     peerConnections.forEach(pc => {
         pc.close();
     });
     peerConnections.clear();
     
-    // Закрываем data channels
     dataChannels.forEach(channel => {
         channel.close();
     });
     dataChannels.clear();
     
-    // Останавливаем удаленные потоки
     remoteStreams.forEach(stream => {
         stream.getTracks().forEach(track => track.stop());
     });
     remoteStreams.clear();
     
-    // Очищаем видео контейнер
     document.getElementById('callVideos').innerHTML = '';
     
     hideCallModal();
@@ -558,7 +676,6 @@ function endCall() {
 
 async function toggleScreenShare() {
     if (isScreenSharing) {
-        // Переключаемся обратно на камеру
         try {
             const newStream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
@@ -571,14 +688,12 @@ async function toggleScreenShare() {
             console.error('Ошибка доступа к камере:', error);
         }
     } else {
-        // Начинаем демонстрацию экрана
         try {
             const screenStream = await navigator.mediaDevices.getDisplayMedia({
                 video: true,
                 audio: true
             });
             
-            // Добавляем аудио из микрофона
             if (localStream) {
                 localStream.getAudioTracks().forEach(track => {
                     screenStream.addTrack(track);
@@ -588,7 +703,6 @@ async function toggleScreenShare() {
             replaceLocalStream(screenStream);
             isScreenSharing = true;
             
-            // Обработка остановки демонстрации экрана
             screenStream.getVideoTracks()[0].onended = () => {
                 toggleScreenShare();
             };
@@ -605,7 +719,6 @@ function replaceLocalStream(newStream) {
     
     localStream = newStream;
     
-    // Обновляем видео элемент
     const videoContainer = document.getElementById(`video_${currentUser.id}`);
     if (videoContainer) {
         const video = videoContainer.querySelector('video');
@@ -614,7 +727,6 @@ function replaceLocalStream(newStream) {
         }
     }
     
-    // Обновляем треки во всех peer connections
     peerConnections.forEach((pc, userId) => {
         const sender = pc.getSenders().find(s => 
             s.track && s.track.kind === 'video'
