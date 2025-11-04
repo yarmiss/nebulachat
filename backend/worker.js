@@ -52,17 +52,21 @@ async function handleWebSocket(request, env) {
   const client = pair[0];
   const server = pair[1];
 
+  // Accept the client WebSocket immediately
+  client.accept();
+
   // Get the global Durable Object instance (single room for all users)
   const id = env.ROOM.idFromName('global-room');
   const roomObject = env.ROOM.get(id);
 
-  // Forward the WebSocket to the Durable Object
+  // Forward the server WebSocket to the Durable Object
+  // @ts-ignore - webSocket is a special property
   await roomObject.fetch('http://internal/websocket', {
+    method: 'GET',
     headers: {
       'Upgrade': 'websocket',
-      'X-User-Code': userId  // Используем старый заголовок для совместимости
+      'X-User-Code': userId
     },
-    // @ts-ignore
     webSocket: server
   });
 
