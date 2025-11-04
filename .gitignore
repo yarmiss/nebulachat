@@ -1,0 +1,36 @@
+# Node modules
+node_modules/
+package-lock.json
+
+# Wrangler
+.wrangler/
+wrangler.toml.bak
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Build output (if any)
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.temp
+
