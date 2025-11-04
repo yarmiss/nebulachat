@@ -1,5 +1,6 @@
 /**
- * NebulaChat - Real-time Chat with Friend Codes
+ * NebulaChat - Real-time Chat
+ * Все пользователи автоматически видят друг друга
  */
 
 console.log('Loading NebulaChat app.js...');
@@ -10,7 +11,7 @@ import { WebSocketClient } from './js/core/websocket.js';
 import { WebRTCClient } from './js/core/webrtc.js';
 
 import { showToast } from './js/ui/components.js';
-import { stringToColor, getInitials, copyToClipboard } from './js/utils/helpers.js';
+import { stringToColor, getInitials } from './js/utils/helpers.js';
 
 console.log('All imports loaded successfully');
 
@@ -23,7 +24,7 @@ class App {
     this.ws = null;
     this.webrtc = null;
     this.currentUser = null;
-    this.userCode = null;
+    this.userId = null;
     this.currentDmUserId = null;
   }
 
@@ -34,16 +35,16 @@ class App {
       await this.loadSvgSprite();
       console.log('SVG sprite loaded');
       
-      // Получаем или создаем уникальный код пользователя
-      this.userCode = this.getOrCreateUserCode();
-      console.log('User code:', this.userCode);
+      // Получаем или создаем ID пользователя
+      this.userId = this.getOrCreateUserId();
+      console.log('User ID:', this.userId);
       
       // Устанавливаем никнейм
       const nickname = this.getUserNickname();
       console.log('Nickname:', nickname);
       
       this.currentUser = {
-        id: this.userCode,
+        id: this.userId,
         username: nickname,
         status: 'online'
       };
@@ -52,7 +53,7 @@ class App {
       this.store.setState('friends', []);
       this.store.setState('messages', []);
 
-      // Показываем код пользователя
+      // Показываем пользователя
       this.updateUserPanel();
       console.log('User panel updated');
 
@@ -75,25 +76,16 @@ class App {
     }
   }
 
-  getOrCreateUserCode() {
-    let code = localStorage.getItem('nebulachat_user_code');
+  getOrCreateUserId() {
+    let userId = localStorage.getItem('nebulachat_user_id');
     
-    if (!code) {
-      // Генерируем уникальный код
-      code = this.generateUniqueCode();
-      localStorage.setItem('nebulachat_user_code', code);
+    if (!userId) {
+      // Генерируем уникальный ID
+      userId = 'user-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+      localStorage.setItem('nebulachat_user_id', userId);
     }
 
-    return code;
-  }
-
-  generateUniqueCode() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < 8; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
+    return userId;
   }
 
   getUserNickname() {
@@ -137,9 +129,9 @@ class App {
       console.log('WebSocket connected');
       showToast('Подключено к серверу', 'success', 2000);
 
-      // Отправляем свой код и никнейм
+      // Отправляем свой ID и никнейм
       this.ws.send('USER_REGISTER', {
-        userCode: this.userCode,
+        userId: this.userId,
         username: this.currentUser.username
       });
     });
@@ -154,32 +146,29 @@ class App {
       console.log('User registered:', payload);
     });
 
-    this.ws.on('FRIENDS_LIST', (payload) => {
-      console.log('Friends list:', payload);
-      this.store.setState('friends', payload.friends || []);
+    // Список всех пользователей (автоматически все в друзьях)
+    this.ws.on('USERS_LIST', (payload) => {
+      console.log('Users list:', payload);
+      const users = (payload.users || []).filter(u => u.id !== this.userId);
+      this.store.setState('friends', users);
       this.renderFriends();
     });
 
-    this.ws.on('FRIEND_ADDED', (payload) => {
-      console.log('Friend added:', payload);
+    // Новый пользователь подключился
+    this.ws.on('USER_CONNECTED', (payload) => {
+      console.log('User connected:', payload);
       const friends = this.store.getState('friends') || [];
-      friends.push(payload.friend);
-      this.store.setState('friends', friends);
-      this.renderFriends();
-      showToast(`${payload.friend.username} добавлен в друзья!`, 'success');
-    });
-
-    this.ws.on('FRIEND_ONLINE', (payload) => {
-      const friends = this.store.getState('friends') || [];
-      const friend = friends.find(f => f.id === payload.userId);
-      if (friend) {
-        friend.status = 'online';
+      if (payload.user.id !== this.userId && !friends.find(f => f.id === payload.user.id)) {
+        friends.push(payload.user);
         this.store.setState('friends', friends);
         this.renderFriends();
+        showToast(`${payload.user.username} подключился`, 'info', 2000);
       }
     });
 
-    this.ws.on('FRIEND_OFFLINE', (payload) => {
+    // Пользователь отключился
+    this.ws.on('USER_DISCONNECTED', (payload) => {
+      console.log('User disconnected:', payload);
       const friends = this.store.getState('friends') || [];
       const friend = friends.find(f => f.id === payload.userId);
       if (friend) {
@@ -189,6 +178,18 @@ class App {
       }
     });
 
+    // Обновление статуса пользователя
+    this.ws.on('USER_STATUS_UPDATE', (payload) => {
+      const friends = this.store.getState('friends') || [];
+      const friend = friends.find(f => f.id === payload.userId);
+      if (friend) {
+        friend.status = payload.status || 'online';
+        this.store.setState('friends', friends);
+        this.renderFriends();
+      }
+    });
+
+    // Сообщения
     this.ws.on('MESSAGE_CREATE', (payload) => {
       const messages = this.store.getState('messages') || [];
       messages.push(payload);
@@ -223,15 +224,20 @@ class App {
     // WebRTC события
     this.webrtc.on('remoteStream', (stream) => {
       const remoteVideo = document.getElementById('remote-video');
-      remoteVideo.srcObject = stream;
-      document.getElementById('call-status').style.display = 'none';
+      if (remoteVideo) {
+        remoteVideo.srcObject = stream;
+        document.getElementById('call-status').style.display = 'none';
+      }
     });
 
     this.webrtc.on('connected', () => {
-      document.getElementById('call-status').textContent = 'Подключено';
-      setTimeout(() => {
-        document.getElementById('call-status').style.display = 'none';
-      }, 2000);
+      const callStatus = document.getElementById('call-status');
+      if (callStatus) {
+        callStatus.textContent = 'Подключено';
+        setTimeout(() => {
+          callStatus.style.display = 'none';
+        }, 2000);
+      }
     });
 
     this.webrtc.on('callEnded', () => {
@@ -239,28 +245,13 @@ class App {
     });
 
     // Подключаемся
-    this.ws.connect(this.userCode);
+    this.ws.connect(this.userId);
   }
 
   setupEventListeners() {
     // Home button
     document.getElementById('home-btn')?.addEventListener('click', () => {
       this.showHomeView();
-    });
-
-    // Copy code button
-    document.getElementById('copy-code-btn')?.addEventListener('click', async () => {
-      const success = await copyToClipboard(this.userCode);
-      if (success) {
-        showToast('Код скопирован!', 'success', 2000);
-      } else {
-        showToast('Ошибка копирования', 'error');
-      }
-    });
-
-    // Add friend button
-    document.getElementById('add-friend-btn')?.addEventListener('click', () => {
-      this.showAddFriendModal();
     });
 
     // Settings button
@@ -279,21 +270,31 @@ class App {
 
     // Call controls
     document.getElementById('toggle-mic-btn')?.addEventListener('click', () => {
-      const enabled = this.webrtc.toggleAudio();
-      document.getElementById('toggle-mic-btn').classList.toggle('muted', !enabled);
+      if (this.webrtc) {
+        const enabled = this.webrtc.toggleAudio();
+        const btn = document.getElementById('toggle-mic-btn');
+        if (btn) btn.classList.toggle('muted', !enabled);
+      }
     });
 
     document.getElementById('toggle-video-btn')?.addEventListener('click', () => {
-      const enabled = this.webrtc.toggleVideo();
-      document.getElementById('toggle-video-btn').classList.toggle('muted', !enabled);
+      if (this.webrtc) {
+        const enabled = this.webrtc.toggleVideo();
+        const btn = document.getElementById('toggle-video-btn');
+        if (btn) btn.classList.toggle('muted', !enabled);
+      }
     });
 
     document.getElementById('share-screen-btn')?.addEventListener('click', async () => {
-      await this.webrtc.shareScreen();
+      if (this.webrtc) {
+        await this.webrtc.shareScreen();
+      }
     });
 
     document.getElementById('end-call-btn')?.addEventListener('click', () => {
-      this.webrtc.endCall();
+      if (this.webrtc) {
+        this.webrtc.endCall();
+      }
     });
 
     // Message input
@@ -304,68 +305,6 @@ class App {
         this.sendMessage();
       }
     });
-  }
-
-  showAddFriendModal() {
-    const modalOverlay = document.getElementById('modal-overlay');
-    const modal = document.getElementById('modal');
-
-    modal.innerHTML = `
-      <div class="modal__header">
-        <h2 class="modal__title">Добавить друга</h2>
-        <button class="modal__close" onclick="document.getElementById('modal-overlay').style.display='none'">
-          <svg width="24" height="24"><use href="icons.svg#x"></use></svg>
-        </button>
-      </div>
-      <div class="modal__body">
-        <div class="form-group">
-          <label class="form-label">Код друга</label>
-          <input type="text" class="form-input" id="friend-code-input" placeholder="Введите 8-значный код" maxlength="8" style="text-transform: uppercase;">
-        </div>
-        <p style="font-size: 14px; color: var(--color-text-muted); margin-top: 8px;">
-          Попросите друга поделиться своим кодом. Он находится в левом нижнем углу.
-        </p>
-      </div>
-      <div class="modal__footer">
-        <button class="btn btn--secondary" onclick="document.getElementById('modal-overlay').style.display='none'">Отмена</button>
-        <button class="btn btn--primary" id="add-friend-submit">Добавить</button>
-      </div>
-    `;
-
-    modalOverlay.style.display = 'flex';
-
-    document.getElementById('add-friend-submit').onclick = () => {
-      this.addFriendByCode();
-    };
-
-    // Auto uppercase
-    document.getElementById('friend-code-input').oninput = (e) => {
-      e.target.value = e.target.value.toUpperCase();
-    };
-  }
-
-  addFriendByCode() {
-    const input = document.getElementById('friend-code-input');
-    const code = input.value.trim().toUpperCase();
-
-    if (code.length !== 8) {
-      showToast('Код должен быть 8 символов', 'error');
-      return;
-    }
-
-    if (code === this.userCode) {
-      showToast('Вы не можете добавить себя в друзья', 'error');
-      return;
-    }
-
-    // Отправляем запрос на добавление
-    if (this.ws && this.ws.isConnected()) {
-      this.ws.send('ADD_FRIEND', { friendCode: code });
-      document.getElementById('modal-overlay').style.display = 'none';
-      showToast('Запрос отправлен...', 'info', 2000);
-    } else {
-      showToast('Нет подключения к серверу', 'error');
-    }
   }
 
   showSettingsModal() {
@@ -384,16 +323,6 @@ class App {
           <label class="form-label">Никнейм</label>
           <input type="text" class="form-input" id="nickname-input" value="${this.currentUser.username}" placeholder="Ваше имя">
         </div>
-        <div class="form-group">
-          <label class="form-label">Ваш код</label>
-          <div style="display: flex; gap: 8px;">
-            <input type="text" class="form-input" value="${this.userCode}" readonly style="font-family: monospace; font-weight: bold; color: var(--color-brand);">
-            <button class="btn btn--secondary" id="copy-code-modal-btn">Копировать</button>
-          </div>
-          <p style="font-size: 13px; color: var(--color-text-muted); margin-top: 8px;">
-            Поделитесь этим кодом с друзьями, чтобы они могли добавить вас
-          </p>
-        </div>
       </div>
       <div class="modal__footer">
         <button class="btn btn--secondary" onclick="document.getElementById('modal-overlay').style.display='none'">Отмена</button>
@@ -402,13 +331,6 @@ class App {
     `;
 
     modalOverlay.style.display = 'flex';
-
-    document.getElementById('copy-code-modal-btn').onclick = async () => {
-      const success = await copyToClipboard(this.userCode);
-      if (success) {
-        showToast('Код скопирован!', 'success', 2000);
-      }
-    };
 
     document.getElementById('save-settings-btn').onclick = () => {
       const newNickname = document.getElementById('nickname-input').value.trim();
@@ -420,7 +342,7 @@ class App {
 
   async startCall(callType) {
     if (!this.currentDmUserId) {
-      showToast('Выберите друга для звонка', 'info');
+      showToast('Выберите пользователя для звонка', 'info');
       return;
     }
 
@@ -428,18 +350,27 @@ class App {
     const friend = friends.find(f => f.id === this.currentDmUserId);
 
     try {
-      document.getElementById('call-modal').style.display = 'flex';
-      document.getElementById('call-title').textContent = `${callType === 'video' ? 'Видеозвонок' : 'Звонок'} - ${friend?.username || 'пользователь'}`;
-      document.getElementById('call-status').textContent = 'Получение доступа...';
-      document.getElementById('call-status').style.display = 'block';
+      const callModal = document.getElementById('call-modal');
+      if (callModal) callModal.style.display = 'flex';
+      
+      const callTitle = document.getElementById('call-title');
+      if (callTitle) callTitle.textContent = `${callType === 'video' ? 'Видеозвонок' : 'Звонок'} - ${friend?.username || 'пользователь'}`;
+      
+      const callStatus = document.getElementById('call-status');
+      if (callStatus) {
+        callStatus.textContent = 'Получение доступа...';
+        callStatus.style.display = 'block';
+      }
 
       const { localStream } = await this.webrtc.startCall(this.currentDmUserId, callType);
       
       const localVideo = document.getElementById('local-video');
-      localVideo.srcObject = localStream;
-      localVideo.style.display = callType === 'video' ? 'block' : 'none';
+      if (localVideo) {
+        localVideo.srcObject = localStream;
+        localVideo.style.display = callType === 'video' ? 'block' : 'none';
+      }
 
-      document.getElementById('call-status').textContent = `Звоним ${friend?.username}...`;
+      if (callStatus) callStatus.textContent = `Звоним ${friend?.username}...`;
     } catch (error) {
       showToast('Ошибка: ' + error.message, 'error');
       this.endCall();
@@ -448,16 +379,25 @@ class App {
 
   async answerCall(offer, callerId, callType) {
     try {
-      document.getElementById('call-modal').style.display = 'flex';
-      document.getElementById('call-title').textContent = `${callType === 'video' ? 'Видеозвонок' : 'Звонок'}`;
-      document.getElementById('call-status').textContent = 'Подключение...';
-      document.getElementById('call-status').style.display = 'block';
+      const callModal = document.getElementById('call-modal');
+      if (callModal) callModal.style.display = 'flex';
+      
+      const callTitle = document.getElementById('call-title');
+      if (callTitle) callTitle.textContent = `${callType === 'video' ? 'Видеозвонок' : 'Звонок'}`;
+      
+      const callStatus = document.getElementById('call-status');
+      if (callStatus) {
+        callStatus.textContent = 'Подключение...';
+        callStatus.style.display = 'block';
+      }
 
       const { localStream } = await this.webrtc.answerCall(offer, callerId, callType);
 
       const localVideo = document.getElementById('local-video');
-      localVideo.srcObject = localStream;
-      localVideo.style.display = callType === 'video' ? 'block' : 'none';
+      if (localVideo) {
+        localVideo.srcObject = localStream;
+        localVideo.style.display = callType === 'video' ? 'block' : 'none';
+      }
     } catch (error) {
       showToast('Ошибка: ' + error.message, 'error');
       this.endCall();
@@ -465,47 +405,54 @@ class App {
   }
 
   endCall() {
-    document.getElementById('call-modal').style.display = 'none';
+    const callModal = document.getElementById('call-modal');
+    if (callModal) callModal.style.display = 'none';
     
     const localVideo = document.getElementById('local-video');
     const remoteVideo = document.getElementById('remote-video');
     
-    if (localVideo.srcObject) {
+    if (localVideo && localVideo.srcObject) {
       localVideo.srcObject.getTracks().forEach(track => track.stop());
       localVideo.srcObject = null;
     }
     
-    if (remoteVideo.srcObject) {
+    if (remoteVideo && remoteVideo.srcObject) {
       remoteVideo.srcObject = null;
     }
   }
 
   sendMessage() {
     const input = document.getElementById('message-input');
-    const content = input.textContent.trim();
+    const content = input?.textContent?.trim();
 
-    if (!content) return;
-
-    const channelId = this.currentDmUserId ? `dm-${this.currentDmUserId}` : 'global';
+    if (!content || !this.currentDmUserId) return;
 
     this.ws.send('MESSAGE_CREATE', {
-      channelId,
+      channelId: `dm-${this.currentDmUserId}`,
       content
     });
 
-    input.textContent = '';
+    if (input) input.textContent = '';
   }
 
   showHomeView() {
     this.currentDmUserId = null;
     
-    document.getElementById('friends-sidebar').style.display = 'flex';
-    document.getElementById('channel-list').style.display = 'none';
-    document.getElementById('friends-main').style.display = 'flex';
-    document.getElementById('chat-header').style.display = 'none';
-    document.getElementById('messages-container').style.display = 'none';
-    document.querySelector('.message-composer').style.display = 'none';
-    document.getElementById('members-sidebar').style.display = 'none';
+    const friendsSidebar = document.getElementById('friends-sidebar');
+    const channelList = document.getElementById('channel-list');
+    const friendsMain = document.getElementById('friends-main');
+    const chatHeader = document.getElementById('chat-header');
+    const messagesContainer = document.getElementById('messages-container');
+    const messageComposer = document.querySelector('.message-composer');
+    const membersSidebar = document.getElementById('members-sidebar');
+
+    if (friendsSidebar) friendsSidebar.style.display = 'flex';
+    if (channelList) channelList.style.display = 'none';
+    if (friendsMain) friendsMain.style.display = 'flex';
+    if (chatHeader) chatHeader.style.display = 'none';
+    if (messagesContainer) messagesContainer.style.display = 'none';
+    if (messageComposer) messageComposer.style.display = 'none';
+    if (membersSidebar) membersSidebar.style.display = 'none';
 
     this.renderFriends();
   }
@@ -513,17 +460,25 @@ class App {
   showDMView(userId) {
     this.currentDmUserId = userId;
 
-    document.getElementById('friends-sidebar').style.display = 'flex';
-    document.getElementById('friends-main').style.display = 'none';
-    document.getElementById('chat-header').style.display = 'flex';
-    document.getElementById('messages-container').style.display = 'block';
-    document.querySelector('.message-composer').style.display = 'block';
-    document.getElementById('members-sidebar').style.display = 'none';
+    const friendsSidebar = document.getElementById('friends-sidebar');
+    const friendsMain = document.getElementById('friends-main');
+    const chatHeader = document.getElementById('chat-header');
+    const messagesContainer = document.getElementById('messages-container');
+    const messageComposer = document.querySelector('.message-composer');
+    const membersSidebar = document.getElementById('members-sidebar');
+
+    if (friendsSidebar) friendsSidebar.style.display = 'flex';
+    if (friendsMain) friendsMain.style.display = 'none';
+    if (chatHeader) chatHeader.style.display = 'flex';
+    if (messagesContainer) messagesContainer.style.display = 'block';
+    if (messageComposer) messageComposer.style.display = 'block';
+    if (membersSidebar) membersSidebar.style.display = 'none';
 
     const friends = this.store.getState('friends') || [];
     const friend = friends.find(f => f.id === userId);
-    if (friend) {
-      document.getElementById('channel-name').textContent = friend.username;
+    const channelName = document.getElementById('channel-name');
+    if (channelName && friend) {
+      channelName.textContent = friend.username;
     }
 
     this.renderMessages();
@@ -533,16 +488,15 @@ class App {
     const container = document.getElementById('friends-content');
     const friends = this.store.getState('friends') || [];
 
+    if (!container) return;
+
     container.innerHTML = '';
 
     if (friends.length === 0) {
       container.innerHTML = `
         <div style="padding: 40px; text-align: center; color: var(--color-text-muted);">
-          <p style="margin-bottom: 16px;">У вас пока нет друзей</p>
-          <button class="btn btn--primary" onclick="document.getElementById('add-friend-btn').click()">
-            <svg width="20" height="20"><use href="icons.svg#user-plus"></use></svg>
-            Добавить друга
-          </button>
+          <p style="margin-bottom: 16px;">Нет других пользователей онлайн</p>
+          <p style="font-size: 14px;">Все кто подключится к сайту автоматически появятся здесь</p>
         </div>
       `;
       return;
@@ -555,14 +509,16 @@ class App {
 
     // Render DMs
     const dmList = document.getElementById('dm-list');
-    while (dmList.children.length > 1) {
-      dmList.removeChild(dmList.lastChild);
-    }
+    if (dmList) {
+      while (dmList.children.length > 1) {
+        dmList.removeChild(dmList.lastChild);
+      }
 
-    friends.forEach(friend => {
-      const dmItem = this.createDMItem(friend);
-      dmList.appendChild(dmItem);
-    });
+      friends.forEach(friend => {
+        const dmItem = this.createDMItem(friend);
+        dmList.appendChild(dmItem);
+      });
+    }
   }
 
   createFriendCard(friend) {
@@ -629,6 +585,8 @@ class App {
     const messages = this.store.getState('messages') || [];
     const channelId = this.currentDmUserId ? `dm-${this.currentDmUserId}` : 'global';
 
+    if (!container) return;
+
     const channelMessages = messages.filter(m => m.channel_id === channelId);
 
     container.innerHTML = '';
@@ -645,7 +603,9 @@ class App {
 
     setTimeout(() => {
       const scrollContainer = document.getElementById('messages-scroll');
-      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
     }, 0);
   }
 
@@ -672,11 +632,11 @@ class App {
 
   updateUserPanel() {
     const userName = document.getElementById('user-name');
-    const userCodeValue = document.getElementById('user-code-value');
+    const userStatus = document.getElementById('user-status');
     const avatar = document.getElementById('user-avatar');
     
     if (userName) userName.textContent = this.currentUser.username;
-    if (userCodeValue) userCodeValue.textContent = this.userCode;
+    if (userStatus) userStatus.textContent = 'онлайн';
     if (avatar) {
       avatar.style.background = stringToColor(this.currentUser.username);
       avatar.textContent = getInitials(this.currentUser.username);
