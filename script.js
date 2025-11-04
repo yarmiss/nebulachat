@@ -29,62 +29,74 @@ document.addEventListener('DOMContentLoaded', () => {
 // Инициализация WebSocket
 function initializeWebSocket() {
     // Используем WebSocket сервер
-    // В продакшене замените на URL вашего Cloudflare Worker
     const wsUrl = getWebSocketUrl();
+    console.log('Подключение к WebSocket:', wsUrl);
     
     try {
         ws = new WebSocket(wsUrl);
         
         ws.onopen = () => {
-            console.log('WebSocket подключен');
+            console.log('✅ WebSocket подключен');
             wsReconnectAttempts = 0;
             
             // Отправляем информацию о пользователе
             if (currentUser) {
-                ws.send(JSON.stringify({
-                    type: 'user_update',
-                    data: {
-                        ...currentUser,
-                        lastSeen: Date.now()
-                    }
-                }));
+                try {
+                    ws.send(JSON.stringify({
+                        type: 'user_update',
+                        data: {
+                            ...currentUser,
+                            lastSeen: Date.now()
+                        }
+                    }));
+                    console.log('Информация о пользователе отправлена');
+                } catch (e) {
+                    console.error('Ошибка отправки user_update:', e);
+                }
             }
         };
         
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                console.log('Получено сообщение от сервера:', data.type);
                 
                 if (data.type === 'new_message') {
                     handleRemoteMessage(data.data);
                 } else if (data.type === 'user_update') {
                     handleUserUpdate(data.data);
                 } else if (data.type === 'history') {
+                    console.log(`Получена история: ${data.messages?.length || 0} сообщений`);
                     handleMessageHistory(data.messages);
                 }
             } catch (e) {
-                console.error('Ошибка обработки WebSocket сообщения:', e);
+                console.error('Ошибка обработки WebSocket сообщения:', e, event.data);
             }
         };
         
         ws.onerror = (error) => {
-            console.error('WebSocket ошибка:', error);
+            console.error('❌ WebSocket ошибка:', error);
+            console.error('WebSocket readyState:', ws?.readyState);
         };
         
-        ws.onclose = () => {
-            console.log('WebSocket отключен');
+        ws.onclose = (event) => {
+            console.log(`WebSocket отключен. Код: ${event.code}, Причина: ${event.reason || 'не указана'}`);
             // Попытка переподключения
             if (wsReconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 wsReconnectAttempts++;
+                const delay = 2000 * wsReconnectAttempts;
+                console.log(`Попытка переподключения ${wsReconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${delay}мс...`);
                 setTimeout(() => {
-                    console.log(`Попытка переподключения ${wsReconnectAttempts}...`);
                     initializeWebSocket();
-                }, 2000 * wsReconnectAttempts);
+                }, delay);
+            } else {
+                console.error('Превышено максимальное количество попыток переподключения');
             }
         };
     } catch (e) {
-        console.error('Ошибка создания WebSocket:', e);
+        console.error('❌ Ошибка создания WebSocket:', e);
         // Fallback на localStorage если WebSocket недоступен
+        console.log('Используется fallback режим (localStorage)');
         initializeWebRTC();
     }
 }
@@ -338,11 +350,23 @@ function sendMessage() {
     
     // Отправляем через WebSocket
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-            type: 'message',
-            ...message
-        }));
+        try {
+            ws.send(JSON.stringify({
+                type: 'message',
+                ...message
+            }));
+            console.log('Сообщение отправлено через WebSocket:', message.text.substring(0, 50));
+        } catch (e) {
+            console.error('Ошибка отправки сообщения через WebSocket:', e);
+            // Fallback на localStorage
+            const syncKey = `sync_${currentChannel}_${Date.now()}`;
+            localStorage.setItem(syncKey, JSON.stringify(message));
+            setTimeout(() => {
+                localStorage.removeItem(syncKey);
+            }, 5000);
+        }
     } else {
+        console.warn('WebSocket не подключен (readyState:', ws?.readyState, '), используется localStorage');
         // Fallback на localStorage если WebSocket недоступен
         const syncKey = `sync_${currentChannel}_${Date.now()}`;
         localStorage.setItem(syncKey, JSON.stringify(message));

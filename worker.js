@@ -1,10 +1,22 @@
 // Cloudflare Worker для WebSocket сервера (без Durable Objects - для бесплатного тарифа)
 // Хранилище в памяти (очищается при перезапуске Worker)
 
+// Используем глобальное хранилище (работает в рамках одного изолированного контекста)
 const rooms = new Map(); // roomId -> { clients: Set, messages: [] }
 
 export default {
     async fetch(request, env, ctx) {
+        // Разрешаем CORS для предварительных запросов
+        if (request.method === 'OPTIONS') {
+            return new Response(null, {
+                headers: {
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type',
+                },
+            });
+        }
+
         const upgradeHeader = request.headers.get('Upgrade');
         if (upgradeHeader !== 'websocket') {
             return new Response('Expected WebSocket', { status: 426 });
@@ -30,26 +42,38 @@ export default {
         
         // Добавляем клиента в комнату
         room.clients.add(server);
+        
+        console.log(`Новое подключение к комнате: ${roomId}, всего клиентов: ${room.clients.size}`);
 
         // Отправляем историю сообщений новому клиенту
         if (room.messages.length > 0) {
-            server.send(JSON.stringify({
-                type: 'history',
-                messages: room.messages.slice(-50) // Последние 50 сообщений
-            }));
+            try {
+                server.send(JSON.stringify({
+                    type: 'history',
+                    messages: room.messages.slice(-50) // Последние 50 сообщений
+                }));
+            } catch (e) {
+                console.error('Ошибка отправки истории:', e);
+            }
         }
 
         // Обработка сообщений
         server.addEventListener('message', (event) => {
-            handleMessage(server, event.data, room);
+            try {
+                handleMessage(server, event.data, room, roomId);
+            } catch (e) {
+                console.error('Ошибка в обработчике сообщений:', e);
+            }
         });
 
         // Обработка отключения
         server.addEventListener('close', () => {
             room.clients.delete(server);
+            console.log(`Клиент отключен от комнаты: ${roomId}, осталось клиентов: ${room.clients.size}`);
             // Удаляем комнату если в ней нет клиентов
             if (room.clients.size === 0) {
                 rooms.delete(roomId);
+                console.log(`Комната ${roomId} удалена (нет клиентов)`);
             }
         });
 
@@ -66,7 +90,7 @@ export default {
     },
 };
 
-function handleMessage(ws, data, room) {
+function handleMessage(ws, data, room, roomId) {
     try {
         const message = JSON.parse(data);
         
@@ -77,7 +101,7 @@ function handleMessage(ws, data, room) {
                 userId: message.userId,
                 text: message.text,
                 timestamp: message.timestamp || Date.now(),
-                channel: message.channel || 'general'
+                channel: message.channel || roomId
             };
             
             room.messages.push(msgData);
@@ -85,6 +109,8 @@ function handleMessage(ws, data, room) {
             if (room.messages.length > 1000) {
                 room.messages.shift();
             }
+
+            console.log(`Новое сообщение в комнате ${roomId} от пользователя ${msgData.userId}, клиентов: ${room.clients.size}`);
 
             // Рассылаем всем клиентам кроме отправителя
             broadcast(room, {
@@ -99,20 +125,29 @@ function handleMessage(ws, data, room) {
             }, ws);
         }
     } catch (e) {
-        console.error('Ошибка обработки сообщения:', e);
+        console.error('Ошибка обработки сообщения:', e, 'Data:', data);
     }
 }
 
 function broadcast(room, message, excludeWs = null) {
     const data = JSON.stringify(message);
+    let sentCount = 0;
+    let errorCount = 0;
+    
     room.clients.forEach((ws) => {
         if (ws !== excludeWs && ws.readyState === 1) { // WebSocket.OPEN === 1
             try {
                 ws.send(data);
+                sentCount++;
             } catch (e) {
                 console.error('Ошибка отправки сообщения:', e);
                 room.clients.delete(ws);
+                errorCount++;
             }
         }
     });
+    
+    if (sentCount > 0 || errorCount > 0) {
+        console.log(`Broadcast: отправлено ${sentCount}, ошибок ${errorCount}, всего клиентов ${room.clients.size}`);
+    }
 }
