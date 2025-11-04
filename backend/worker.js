@@ -3,6 +3,11 @@
  * Handles WebSocket connections and routes to Durable Objects
  */
 
+import { Room } from './objects/Room.js';
+
+// Экспортируем класс Room для Durable Objects
+export { Room };
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -34,16 +39,18 @@ async function handleWebSocket(request, env) {
     return new Response('Expected Upgrade: websocket', { status: 426 });
   }
 
-  // Get user code from query parameter
+  // Get user ID from query parameter
   const url = new URL(request.url);
-  const userCode = url.searchParams.get('token');
+  const userId = url.searchParams.get('token');
 
-  if (!userCode) {
-    return new Response('Missing user code', { status: 400 });
+  if (!userId) {
+    return new Response('Missing user ID', { status: 400 });
   }
 
   // Create WebSocket pair
-  const [client, server] = Object.values(new WebSocketPair());
+  const pair = new WebSocketPair();
+  const client = pair[0];
+  const server = pair[1];
 
   // Get the global Durable Object instance (single room for all users)
   const id = env.ROOM.idFromName('global-room');
@@ -53,7 +60,7 @@ async function handleWebSocket(request, env) {
   await roomObject.fetch('http://internal/websocket', {
     headers: {
       'Upgrade': 'websocket',
-      'X-User-Code': userCode
+      'X-User-Code': userId  // Используем старый заголовок для совместимости
     },
     // @ts-ignore
     webSocket: server
@@ -64,11 +71,4 @@ async function handleWebSocket(request, env) {
     // @ts-ignore
     webSocket: client
   });
-}
-
-// WebSocket Pair polyfill for TypeScript
-class WebSocketPair {
-  constructor() {
-    return [new WebSocket(), new WebSocket()];
-  }
 }
