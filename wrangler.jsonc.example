@@ -1,0 +1,82 @@
+{
+	"name": "discord-clone",
+	"main": "workers/index.ts",
+	"compatibility_date": "2024-01-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"workers_dev": true,
+	// Инструкции:
+	// 1. Скопируйте этот файл в wrangler.jsonc
+	// 2. Создайте ресурсы: wrangler d1 create discord-clone-db
+	// 3. Замените YOUR_D1_DATABASE_ID на полученный database_id
+	// 4. Создайте KV: wrangler kv namespace create CACHE
+	// 5. Замените YOUR_KV_NAMESPACE_ID на полученный id
+	"env": {
+		"production": {
+			"name": "discord-clone-prod",
+			"route": {
+				"pattern": "discord-clone.yourdomain.com/*",
+				"custom_domain": true
+			}
+		},
+		"development": {
+			"name": "discord-clone-dev"
+		}
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "CHAT_ROOM",
+				"class_name": "ChatRoom"
+			},
+			{
+				"name": "USER_STATUS",
+				"class_name": "UserStatus"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"ChatRoom",
+				"UserStatus"
+			]
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "discord-clone-db",
+			"database_id": "YOUR_D1_DATABASE_ID"
+		}
+	],
+	// R2 временно отключен - включите R2 в Cloudflare Dashboard перед использованием
+	// После включения раскомментируйте:
+	// "r2_buckets": [
+	// 	{
+	// 		"binding": "BUCKET",
+	// 		"bucket_name": "discord-files"
+	// 	}
+	// ],
+	"kv_namespaces": [
+		{
+			"binding": "CACHE",
+			"id": "YOUR_KV_NAMESPACE_ID"
+		}
+	],
+	"vars": {
+		"NODE_ENV": "production"
+	},
+	"rules": [
+		{
+			"type": "Text",
+			"globs": [
+				"**/*.ts"
+			],
+			"fallthrough": true
+		}
+	]
+}
+

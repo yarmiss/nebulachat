@@ -1,0 +1,49 @@
+{
+  "name": "discord-clone",
+  "version": "1.0.0",
+  "description": "Полнофункциональный клон Discord с WebRTC, реалтайм чатом и Cloudflare интеграцией",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "migrate": "node database.js",
+    "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --env production",
+    "deploy:pages": "wrangler pages deploy public",
+    "dev:cloudflare": "wrangler dev",
+    "setup:cloudflare": "powershell -ExecutionPolicy Bypass -File ./setup-cloudflare.ps1",
+    "d1:migrate": "wrangler d1 execute discord-clone-db --file=./workers/migrations/0001_initial.sql",
+    "d1:migrate:local": "wrangler d1 execute discord-clone-db --local --file=./workers/migrations/0001_initial.sql",
+    "d1:query": "wrangler d1 execute discord-clone-db --command",
+    "r2:list": "wrangler r2 object list discord-files",
+    "kv:list": "wrangler kv:key list --namespace-id"
+  },
+  "keywords": [
+    "discord",
+    "clone",
+    "webrtc",
+    "realtime",
+    "chat",
+    "cloudflare"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.5.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "sqlite3": "^5.1.6",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.0",
+    "multer": "^2.0.0",
+    "express-rate-limit": "^7.0.0",
+    "helmet": "^7.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20231218.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^3.19.0"
+  }
+}
